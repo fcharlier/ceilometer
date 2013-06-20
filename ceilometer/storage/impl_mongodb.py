@@ -32,10 +32,11 @@ import bson.code
 import bson.objectid
 import pymongo
 
+from oslo.config import cfg
+
 from ceilometer.openstack.common import log
 from ceilometer.storage import base
 from ceilometer.storage import models
-
 
 LOG = log.getLogger(__name__)
 
@@ -66,13 +67,26 @@ class MongoDBStorage(base.StorageEngine):
             }
     """
 
-    OPTIONS = []
+    OPTIONS = [
+        cfg.StrOpt('replica_set_name',
+                   default=None,
+                   help='Used to identify the replication set name',
+                   ),
+    ]
+
+    OPTION_GROUP = cfg.OptGroup(name='mongodb',
+                                title='Options for the mongodb storage')
 
     def register_opts(self, conf):
         """Register any configuration options used by this engine.
         """
-        conf.register_opts(self.OPTIONS)
+        conf.register_group(self.OPTION_GROUP)
+        conf.register_opts(self.OPTIONS, self.OPTION_GROUP)
 
+    # FIXME(xingzhou): ceilometer-api will create a Connection object for
+    # each request. As pymongo.Connection has already maintained a db
+    # connection pool for client, it is better to use a cached Connection
+    # object to connect to mongodb.
     def get_connection(self, conf):
         """Return a Connection instance based on the configuration settings.
         """
@@ -220,9 +234,9 @@ class Connection(base.Connection):
                 self.conn = Connection._mim_instance
                 LOG.debug('Using MIM for test connection')
         else:
-            self.conn = pymongo.Connection(opts['host'],
-                                           opts['port'],
-                                           safe=True)
+            self.conn = self._create_pymongo_connection(opts['host'],
+                                                        opts['port'],
+                                                        conf)
 
         self.db = getattr(self.conn, opts['dbname'])
         if 'username' in opts:
@@ -247,6 +261,16 @@ class Connection(base.Connection):
                 ('timestamp', pymongo.ASCENDING),
                 ('source', pymongo.ASCENDING),
             ], name='meter_idx')
+
+    #create pymongo.Connection based on replication set
+    def _create_pymongo_connection(self, host, port, conf):
+        replicaSet = conf.mongodb.replica_set_name
+
+        if replicaSet is None:
+            return pymongo.Connection(host, port, safe=True)
+
+        return pymongo.Connection(host, port,
+                                  replicaSet=replicaSet, safe=True)
 
     @staticmethod
     def upgrade(version=None):
