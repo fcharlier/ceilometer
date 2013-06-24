@@ -69,7 +69,7 @@ class MongoDBStorage(base.StorageEngine):
 
     OPTIONS = [
         cfg.StrOpt('replica_set_name',
-                   default=None,
+                   default='',
                    help='Used to identify the replication set name',
                    ),
     ]
@@ -211,15 +211,15 @@ class Connection(base.Connection):
 
     def __init__(self, conf):
         opts = self._parse_connection_url(conf.database.connection)
-        LOG.info('connecting to MongoDB on %s:%s', opts['host'], opts['port'])
+        LOG.info('connecting to MongoDB replicaset "%s" on %s',
+                 conf.mongodb.replica_set_name,
+                 opts['netloc'])
 
-        if opts['host'] == '__test__':
+        if opts['netloc'] == '__test__':
             url = os.environ.get('CEILOMETER_TEST_MONGODB_URL')
             if url:
                 opts = self._parse_connection_url(url)
-                self.conn = pymongo.Connection(opts['host'],
-                                               opts['port'],
-                                               safe=True)
+                self.conn = pymongo.Connection(opts['netloc'], safe=True)
             else:
                 # MIM will die if we have too many connections, so use a
                 # Singleton
@@ -234,9 +234,10 @@ class Connection(base.Connection):
                 self.conn = Connection._mim_instance
                 LOG.debug('Using MIM for test connection')
         else:
-            self.conn = self._create_pymongo_connection(opts['host'],
-                                                        opts['port'],
-                                                        conf)
+            self.conn = pymongo.Connection(
+                    opts['netloc'],
+                    replicaSet=conf.mongodb.replica_set_name,
+                    safe=True)
 
         self.db = getattr(self.conn, opts['dbname'])
         if 'username' in opts:
@@ -262,16 +263,6 @@ class Connection(base.Connection):
                 ('source', pymongo.ASCENDING),
             ], name='meter_idx')
 
-    #create pymongo.Connection based on replication set
-    def _create_pymongo_connection(self, host, port, conf):
-        replicaSet = conf.mongodb.replica_set_name
-
-        if replicaSet is None:
-            return pymongo.Connection(host, port, safe=True)
-
-        return pymongo.Connection(host, port,
-                                  replicaSet=replicaSet, safe=True)
-
     @staticmethod
     def upgrade(version=None):
         pass
@@ -293,15 +284,9 @@ class Connection(base.Connection):
         opts['dbname'] = result.path.replace('/', '')
         netloc_match = re.match(r'(?:(\w+:\w+)@)?(.*)', result.netloc)
         auth = netloc_match.group(1)
-        netloc = netloc_match.group(2)
+        opts['netloc'] = netloc_match.group(2)
         if auth:
             opts['username'], opts['password'] = auth.split(':')
-        if ':' in netloc:
-            opts['host'], port = netloc.split(':')
-        else:
-            opts['host'] = netloc
-            port = 27017
-        opts['port'] = port and int(port) or 27017
         return opts
 
     def record_metering_data(self, data):
